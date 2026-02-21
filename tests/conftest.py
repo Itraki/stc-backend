@@ -1,21 +1,15 @@
 import pytest
-from motor.motor_asyncio import AsyncMotorClient
+import mongomock_motor
 from app.config import settings
-import asyncio
-
-
-@pytest.fixture(scope="session")
-def event_loop():
-    return asyncio.get_event_loop()
 
 
 @pytest.fixture
 async def test_db():
-    """Create test database"""
-    client = AsyncMotorClient(settings.DB_URI)
-    db = client["stc-db-test"]
+    """Create test database using mongomock"""
+    client = mongomock_motor.AsyncMongoMockClient()
+    db = client.get_database("stc-db-test")
     yield db
-    await client.drop_database("stc-db-test")
+    client.close()
 
 
 @pytest.fixture

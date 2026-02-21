@@ -39,6 +39,10 @@ black = "^23.11.0"
 flake8 = "^6.1.0"
 isort = "^5.13.0"
 
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
