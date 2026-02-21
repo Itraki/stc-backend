@@ -1,0 +1,99 @@
+name: CD - Deploy to Production
+
+on:
+  workflow_run:
+    workflows: ["CI - Build and Push"]
+    types:
+      - completed
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+
+env:
+  DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/stc_backend
+
+jobs:
+  deploy:
+    name: Deploy to Server
+    runs-on: self-hosted
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    environment:
+      name: ${{ github.event.inputs.environment || 'production' }}
+      url: https://api.yourdomain.com
+    
+    steps:
+      - name: Log in to Docker Hub
+        run: |
+          echo "🔐 Logging into Docker Hub..."
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+      - name: Pull latest image
+        run: |
+          echo "📥 Pulling latest image..."
+          docker pull ${{ env.DOCKER_IMAGE }}:latest
+
+      - name: Navigate to deployment directory
+        run: |
+          cd /opt/stc-backend || exit 1
+          pwd
+
+      - name: Stop old containers
+        run: |
+          echo "🛑 Stopping old containers..."
+          cd /opt/stc-backend
+          docker-compose -f docker-compose.prod.yml down || true
+
+      - name: Start new containers
+        run: |
+          echo "🚀 Starting new containers..."
+          cd /opt/stc-backend
+          docker-compose -f docker-compose.prod.yml up -d
+
+      - name: Wait for services
+        run: |
+          echo "⏳ Waiting for services to start..."
+          sleep 15
+
+      - name: Health check
+        run: |
+          echo "🏥 Running health check..."
+          if curl -f http://localhost:8000/health; then
+            echo "✅ Deployment successful!"
+          else
+            echo "❌ Health check failed!"
+            cd /opt/stc-backend
+            docker-compose -f docker-compose.prod.yml logs fastapi_app
+            exit 1
+          fi
+
+      - name: Cleanup old images
+        run: |
+          echo "🧹 Cleaning up old images..."
+          docker image prune -f
+
+      - name: Deployment summary
+        run: |
+          echo "### 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ github.event.inputs.environment || 'production' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** ${{ env.DOCKER_IMAGE }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "**Deployed at:** $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** ✅ Success" >> $GITHUB_STEP_SUMMARY
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "### ❌ Deployment Failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ github.event.inputs.environment || 'production' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Failed at:** $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "Check the logs above for details." >> $GITHUB_STEP_SUMMARY
