@@ -50,13 +50,13 @@ jobs:
         run: |
           echo "🛑 Stopping old containers..."
           cd /opt/stc-backend
-          docker-compose -f docker-compose.prod.yml down || true
+          docker compose -f docker-compose.prod.yml down || true
 
       - name: Start new containers
         run: |
           echo "🚀 Starting new containers..."
           cd /opt/stc-backend
-          docker-compose -f docker-compose.prod.yml up -d
+          docker compose -f docker-compose.prod.yml up -d
 
       - name: Wait for services
         run: |
@@ -71,7 +71,7 @@ jobs:
           else
             echo "❌ Health check failed!"
             cd /opt/stc-backend
-            docker-compose -f docker-compose.prod.yml logs fastapi_app
+            docker compose -f docker-compose.prod.yml logs fastapi_app
             exit 1
           fi
 
