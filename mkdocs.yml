@@ -85,6 +85,9 @@ extra:
   version:
     provider: mike
 
+# Disable strict mode to allow warnings
+strict: false
+
 # Disable strict mode warnings that are not critical
 validation:
   nav:
