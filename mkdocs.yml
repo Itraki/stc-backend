@@ -75,33 +75,8 @@ nav:
   - API Reference:
       - Overview: api/overview.md
       - Authentication: api/authentication.md
-      - Cases: api/cases.md
-      - Analytics: api/analytics.md
-      - Chatbot: api/chatbot.md
-      - File Upload: api/file-upload.md
-  - Features:
-      - RBAC: features/rbac.md
-      - Caching: features/caching.md
-      - Vector Database: features/vector-database.md
-      - Geospatial: features/geospatial.md
-      - SSE Streaming: features/sse.md
-  - Deployment:
-      - Docker: deployment/docker.md
-      - Production: deployment/production.md
-      - Self-Hosted: deployment/self-hosted.md
-  - Data Management:
-      - Data Loading: data/loading.md
-      - Migrations: data/migrations.md
-      - Kenya API: data/kenya-api.md
   - Development:
       - Project Structure: development/structure.md
-      - Code Reference: development/code-reference.md
-      - Testing: development/testing.md
-      - Performance: development/performance.md
-  - Guides:
-      - Security: guides/security.md
-      - Monitoring: guides/monitoring.md
-      - Troubleshooting: guides/troubleshooting.md
 
 extra:
   social:
