@@ -46,17 +46,25 @@ jobs:
           cd /opt/stc-backend || exit 1
           pwd
 
-      - name: Stop old containers
+      - name: Stop old application container only
         run: |
-          echo "🛑 Stopping old containers..."
+          echo "🛑 Stopping old application container..."
           cd /opt/stc-backend
-          docker compose -f docker-compose.prod.yml down || true
+          # Stop only the app container, keep databases running
+          docker compose -f docker-compose.prod.yml stop fastapi_app || true
+          docker compose -f docker-compose.prod.yml rm -f fastapi_app || true
 
-      - name: Start new containers
+      - name: Start services
         run: |
-          echo "🚀 Starting new containers..."
+          echo "🚀 Starting services..."
           cd /opt/stc-backend
+          # Start all services (databases will skip if already running)
           docker compose -f docker-compose.prod.yml up -d
+          
+      - name: Verify volumes
+        run: |
+          echo "📊 Checking data volumes..."
+          docker volume ls | grep -E "(mongo_data|postgres_data)" || echo "Warning: Volumes not found"
 
       - name: Wait for services
         run: |

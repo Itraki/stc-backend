@@ -84,3 +84,14 @@ extra:
       link: https://github.com/itraki/SaveTheChildren_Backend
   version:
     provider: mike
+
+# Disable strict mode warnings that are not critical
+validation:
+  nav:
+    omitted_files: info
+    not_found: warn
+    absolute_links: info
+  links:
+    not_found: warn
+    absolute_links: info
+    unrecognized_links: info
