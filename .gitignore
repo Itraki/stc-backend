@@ -39,3 +39,6 @@ logs/
 *.parquet
 *.js
 *.html
+
+# MkDocs
+site/
