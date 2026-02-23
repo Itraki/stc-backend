@@ -361,7 +361,7 @@ async def _calculate_demographics(db, date_from: Optional[str], date_to: Optiona
                 "by_gender": [
                     {
                         "$group": {
-                            "_id": {"$ifNull": ["$sex", {"$ifNull": ["$victim_sex", "$Sex"]}]},
+                            "_id": {"$ifNull": ["$sex", {"$ifNull": ["$child_sex", {"$ifNull": ["$victim_sex", "$Sex"]}]}]},
                             "count": {"$sum": 1}
                         }
                     }
@@ -379,7 +379,7 @@ async def _calculate_demographics(db, date_from: Optional[str], date_to: Optiona
                         "$group": {
                             "_id": {
                                 "age_band": {"$ifNull": ["$age_range", {"$ifNull": ["$victim_age_range", "$Age Range"]}]},
-                                "sex": {"$ifNull": ["$sex", {"$ifNull": ["$victim_sex", "$Sex"]}]}
+                                "sex": {"$ifNull": ["$sex", {"$ifNull": ["$child_sex", {"$ifNull": ["$victim_sex", "$Sex"]}]}]}
                             },
                             "count": {"$sum": 1}
                         }
