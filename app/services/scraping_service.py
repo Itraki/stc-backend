@@ -15,12 +15,27 @@ try:
 except ImportError:
     logger.warning("Scraping dependencies not installed.")
 
+from app.integrations.scraper_clients import ScraperClient, StealthScraper, PlaywrightScraper
+from app.integrations.document_chunker import DocumentChunker
+
+# Import Playwright for headless browsing
+try:
+    from playwright.async_api import async_playwright
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+    logger.warning("Playwright not installed. Some scraping features may be limited.")
+
 
 class ScrapingService:
     def __init__(self, db: AsyncIOMotorDatabase):
         self.db = db
         self.scraping_jobs_collection = db.scraping_jobs
         self.scraping_results_collection = db.scraping_results
+        # Lazy-initialised on first successful scrape
+        self._embedding_service = None
+        self._vector_service = None
+        self._chunker = DocumentChunker(chunk_size=1000, chunk_overlap=200)
 
     async def create_scraping_job(
         self,
@@ -102,15 +117,22 @@ class ScrapingService:
             try:
                 # Scrape the website
                 scraped_data = await self._scrape_website(job["url"], job["selectors"])
-                
+
+                result_id = str(uuid.uuid4())
+
+                # Vectorize and store in pgvector (non-blocking on failure)
+                vector_id = await self._vectorize_scraped_data(scraped_data, job, result_id)
+
                 result_doc = {
-                    "result_id": str(uuid.uuid4()),
+                    "result_id": result_id,
                     "job_id": job_id,
                     "url": job["url"],
                     "data": scraped_data,
                     "timestamp": datetime.now(timezone.utc),
                     "status": "success",
-                    "item_count": len(self._flatten_data(scraped_data))
+                    "item_count": len(self._flatten_data(scraped_data)),
+                    "vectorized": vector_id is not None,
+                    "vector_id": vector_id,
                 }
             except Exception as e:
                 logger.error(f"Error scraping website {job['url']}: {e}")
@@ -121,7 +143,9 @@ class ScrapingService:
                     "error": str(e),
                     "timestamp": datetime.now(timezone.utc),
                     "status": "failed",
-                    "item_count": 0
+                    "item_count": 0,
+                    "vectorized": False,
+                    "vector_id": None,
                 }
             
             # Store the result
@@ -162,7 +186,9 @@ class ScrapingService:
                 "timestamp": result_doc["timestamp"],
                 "next_run": next_run,
                 "data": result_doc.get("data"),
-                "error": result_doc.get("error")
+                "error": result_doc.get("error"),
+                "vectorized": result_doc.get("vectorized", False),
+                "vector_id": result_doc.get("vector_id"),
             }
         except HTTPException:
             raise
@@ -282,45 +308,190 @@ class ScrapingService:
             logger.error(f"Error deleting scraping job: {e}")
             raise
 
-    async def _scrape_website(self, url: str, selectors: dict) -> dict:
-        """Scrape website and extract data using CSS selectors"""
+    def _get_vector_services(self):
+        """Lazily initialise embedding + vector services (same pattern as FileService)."""
+        if self._embedding_service is None:
+            from app.integrations.embedding_service import EmbeddingService
+            from app.integrations.postgres_vector_service import PostgresVectorService
+
+            self._embedding_service = EmbeddingService()
+            self._vector_service = PostgresVectorService(
+                dimension=self._embedding_service.dimension
+                if self._embedding_service.available
+                else 384
+            )
+        return self._embedding_service, self._vector_service
+
+    async def _vectorize_scraped_data(
+        self, scraped_data: dict, job: dict, result_id: str
+    ) -> Optional[str]:
+        """
+        Chunk, embed and store scraped text in pgvector.
+
+        Returns the vector_id (used as file_id in the DocumentChunk table)
+        on success, or None if vectorization is unavailable / fails.
+        The job can still be considered successful even if vectorization fails.
+        """
         try:
-            # Set headers to avoid blocking
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            embedding_service, vector_service = self._get_vector_services()
+            if not embedding_service.available:
+                logger.warning("No embedding provider available — skipping vectorization")
+                return None
+
+            # Ensure the pgvector table exists
+            await vector_service.initialize()
+
+            # Flatten scraped_data values into a single document string
+            text_parts = []
+            for field, value in scraped_data.items():
+                if isinstance(value, list):
+                    joined = " | ".join(str(v) for v in value if v)
+                    if joined:
+                        text_parts.append(f"{field}: {joined}")
+                elif value:
+                    text_parts.append(f"{field}: {value}")
+
+            full_text = "\n".join(text_parts).strip()
+            if not full_text:
+                logger.info(f"No text to vectorize for result {result_id}")
+                return None
+
+            chunks = self._chunker.chunk_text(full_text)
+            chunk_texts = [c["text"] for c in chunks]
+            embeddings = await embedding_service.embed_texts(chunk_texts)
+
+            vector_id = f"scrape_{result_id}"
+            metadata = {
+                "source_type": "web_scrape",
+                "url": job["url"],
+                "job_id": job["job_id"],
+                "job_name": job.get("job_name", ""),
+                "result_id": result_id,
+                "target_type": job.get("target_type", "general"),
             }
+
+            await vector_service.upsert_document_chunks(
+                vector_id, chunks, embeddings, metadata
+            )
+
+            logger.info(
+                f"Vectorized scraping result {result_id}: "
+                f"{len(chunks)} chunk(s) stored in pgvector (id={vector_id})"
+            )
+            return vector_id
+
+        except Exception as exc:
+            logger.warning(f"Vectorization failed for result {result_id}: {exc}")
+            return None
+
+    async def _scrape_website(self, url: str, selectors: dict) -> dict:
+        """
+        Scrape website using Scrapy + Playwright (primary) with a direct Playwright fallback.
+        Scrapy provides middleware support (UA rotation, retry logic) on top of Playwright.
+        """
+        # --- Primary: Scrapy + Playwright ---
+        try:
+            from app.services.scrapy_runner import ScrapyRunner
+
+            logger.info(f"Scraping {url} via Scrapy+Playwright")
+            result = await ScrapyRunner.run_generic_spider(url, selectors)
+            if result and result.get("scraped_data") is not None:
+                logger.info(f"Scrapy+Playwright succeeded for {url}")
+                return result.get("scraped_data", {})
+        except Exception as exc:
+            logger.warning(f"Scrapy+Playwright failed for {url}: {exc} — falling back to direct Playwright")
+
+        # --- Fallback: direct Playwright ---
+        logger.info(f"Scraping {url} via direct Playwright (fallback)")
+        try:
+            from playwright.async_api import async_playwright
             
-            response = requests.get(url, headers=headers, timeout=15)
-            response.raise_for_status()
-            
-            soup = BeautifulSoup(response.content, 'html.parser')
-            
-            scraped_data = {}
-            for field_name, css_selector in selectors.items():
-                try:
-                    elements = soup.select(css_selector)
-                    
-                    if len(elements) == 1:
-                        # Single element - return text
-                        scraped_data[field_name] = elements[0].get_text(strip=True)
-                    else:
-                        # Multiple elements - return list
-                        scraped_data[field_name] = [
-                            elem.get_text(strip=True) for elem in elements
-                        ]
-                except Exception as e:
-                    logger.warning(f"Error extracting selector {css_selector}: {e}")
-                    scraped_data[field_name] = None
-            
-            logger.info(f"Successfully scraped {url}")
-            return scraped_data
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Request error scraping {url}: {e}")
-            raise Exception(f"Failed to fetch website: {str(e)}")
+            async with async_playwright() as p:
+                # Launch browser with stealth options
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=[
+                        '--no-sandbox',
+                        '--disable-setuid-sandbox',
+                        '--disable-dev-shm-usage',
+                        '--disable-accelerated-2d-canvas',
+                        '--no-first-run',
+                        '--no-zygote',
+                        '--disable-gpu',
+                        '--hide-scrollbars',
+                        '--mute-audio',
+                        '--disable-background-timer-throttling',
+                        '--disable-backgrounding-occluded-windows',
+                        '--disable-renderer-backgrounding',
+                        '--disable-features=TranslateUI',
+                        '--disable-extensions',
+                        '--disable-component-extensions-with-background-pages',
+                    ]
+                )
+                
+                # Create context with realistic browser fingerprint
+                context = await browser.new_context(
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    viewport={'width': 1920, 'height': 1080},
+                    device_scale_factor=1,
+                    is_mobile=False,
+                    has_touch=False,
+                    locale='en-US',
+                    timezone_id='America/New_York',
+                )
+                
+                page = await context.new_page()
+                
+                # Navigate with wait
+                response = await page.goto(
+                    url,
+                    wait_until='domcontentloaded',
+                    timeout=30000
+                )
+                
+                if response.status == 403:
+                    await browser.close()
+                    raise Exception("403 Forbidden - Site is blocking scrapers even with Playwright")
+                
+                # Wait for network to be idle
+                await page.wait_for_load_state('networkidle')
+                
+                # Scroll to trigger lazy loading
+                await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+                await asyncio.sleep(2)
+                
+                # Get page content
+                html = await page.content()
+                
+                await browser.close()
+                
+                # Parse with BeautifulSoup
+                soup = BeautifulSoup(html, 'html.parser')
+                
+                scraped_data = {}
+                for field_name, css_selector in selectors.items():
+                    try:
+                        elements = soup.select(css_selector)
+                        
+                        if len(elements) == 1:
+                            scraped_data[field_name] = elements[0].get_text(strip=True)
+                        else:
+                            scraped_data[field_name] = [
+                                elem.get_text(strip=True) for elem in elements
+                            ]
+                    except Exception as e:
+                        logger.warning(f"Error extracting selector {css_selector}: {e}")
+                        scraped_data[field_name] = None
+                
+                logger.info(f"Successfully scraped {url} with Playwright")
+                return scraped_data
+                
+        except ImportError:
+            logger.error("Playwright not installed")
+            raise Exception("Playwright not installed. Run: pip install playwright && playwright install chromium")
         except Exception as e:
-            logger.error(f"Error scraping {url}: {e}")
-            raise
+            logger.error(f"Error scraping {url} with Playwright: {e}")
+            raise Exception(f"Failed to scrape website: {str(e)}")
 
     def _flatten_data(self, data: dict) -> list:
         """Flatten scraped data for counting items"""

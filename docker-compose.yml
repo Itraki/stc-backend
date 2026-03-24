@@ -7,7 +7,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DB_URI: mongodb://stc_admin:${MONGO_PASSWORD}@mongodb:27017/stc-db?authSource=stc-db
+      DB_URI: mongodb://stc_admin:${MONGO_PASSWORD}@mongodb:27017/stc-db?authSource=admin
       DB_NAME: stc-db
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       AZURE_STORAGE_CONNECTION_STRING: ${AZURE_STORAGE_CONNECTION_STRING:-}
