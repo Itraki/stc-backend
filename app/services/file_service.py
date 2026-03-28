@@ -24,10 +24,6 @@ class FileService:
         )
         self.chunker = DocumentChunker(chunk_size=1000, chunk_overlap=200)
         
-        # Initialize PostgreSQL vector database
-        import asyncio
-        asyncio.create_task(self.vector_service.initialize())
-        
         logger.info(f"Using embeddings: {self.embedding_service.provider} (dim: {self.embedding_service.dimension})")
         logger.info("Using PostgreSQL for local vector storage")
 
@@ -41,6 +37,7 @@ class FileService:
     ) -> dict:
         """Upload file, chunk it, generate embeddings, and store in PostgreSQL vector database"""
         try:
+            await self.vector_service.initialize()
             file_id = str(uuid.uuid4())
             
             # Extract text from file content
@@ -184,6 +181,7 @@ class FileService:
 
             # Delete from PostgreSQL vector database
             try:
+                await self.vector_service.initialize()
                 await self.vector_service.delete_document(file_id)
             except Exception as e:
                 logger.error(f"Error deleting file from vector database: {e}")
@@ -234,6 +232,7 @@ class FileService:
                 filter_dict["file_type"] = file_type
             
             # Search PostgreSQL vector database
+            await self.vector_service.initialize()
             results = await self.vector_service.search_similar_chunks(
                 query_embedding,
                 top_k=top_k,

@@ -45,10 +45,13 @@ class PostgresVectorService:
             class_=AsyncSession,
             expire_on_commit=False
         )
+        self._initialized = False
         logger.info(f"PostgreSQL Vector Service initialized with dimension {dimension}")
     
     async def initialize(self):
         """Create tables and enable pgvector extension"""
+        if self._initialized:
+            return
         try:
             async with self.engine.begin() as conn:
                 # Enable pgvector extension
@@ -57,6 +60,7 @@ class PostgresVectorService:
                 # Create tables
                 await conn.run_sync(Base.metadata.create_all)
                 
+            self._initialized = True
             logger.info("PostgreSQL vector database initialized successfully")
         except Exception as e:
             logger.error(f"Error initializing PostgreSQL vector database: {e}")

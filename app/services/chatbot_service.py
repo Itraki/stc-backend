@@ -41,10 +41,6 @@ class ChatbotService:
                 dimension=self.embedding_service.dimension if self.embedding_service.available else 384
             )
             
-            # Initialize PostgreSQL vector database
-            import asyncio
-            asyncio.create_task(self.vector_service.initialize())
-            
             self.rag_available = self.embedding_service.available
             logger.info(f"RAG initialized with {self.embedding_service.provider} embeddings and PostgreSQL vectors")
         except Exception as e:
@@ -351,6 +347,7 @@ Please provide a helpful response based on the available data and context."""
             # Search uploaded documents using PostgreSQL vector search
             if self.rag_available:
                 try:
+                    await self.vector_service.initialize()
                     query_embedding = await self.embedding_service.embed_text(message)
                     doc_results = await self.vector_service.search_similar_chunks(
                         query_embedding,
