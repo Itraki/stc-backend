@@ -69,19 +69,26 @@ jobs:
       - name: Wait for services
         run: |
           echo "⏳ Waiting for services to start..."
-          sleep 15
+          sleep 90
 
       - name: Health check
         run: |
           echo "🏥 Running health check..."
-          if curl -f http://localhost:8000/health; then
-            echo "✅ Deployment successful!"
-          else
-            echo "❌ Health check failed!"
-            cd /opt/stc-backend
-            docker compose -f docker-compose.prod.yml logs fastapi_app
-            exit 1
-          fi
+          MAX_RETRIES=5
+          RETRY_INTERVAL=10
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "Attempt $i/$MAX_RETRIES..."
+            if curl -f --max-time 10 http://localhost:8000/health; then
+              echo "✅ Deployment successful!"
+              exit 0
+            fi
+            echo "Health check failed, retrying in ${RETRY_INTERVAL}s..."
+            sleep $RETRY_INTERVAL
+          done
+          echo "❌ Health check failed after $MAX_RETRIES attempts!"
+          cd /opt/stc-backend
+          docker compose -f docker-compose.prod.yml logs fastapi_app
+          exit 1
 
       - name: Cleanup old images
         run: |

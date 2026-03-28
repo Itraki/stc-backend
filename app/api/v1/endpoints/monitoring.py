@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends
+from bson import ObjectId
 from app.db.client import get_database
 from app.services.chatbot_service import ChatbotService
 from app.services.scraping_service import ScrapingService
@@ -158,10 +159,16 @@ async def get_token_limits(
         now = datetime.now(timezone.utc)
         month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         
+        user_id = current_user.user_id
+        try:
+            user_object_id = ObjectId(user_id) if user_id else None
+        except Exception:
+            user_object_id = user_id
+
         pipeline = [
             {
                 "$match": {
-                    "user_id": current_user.user_id if hasattr(current_user, 'user_id') else None,
+                    "user_id": user_object_id,
                     "timestamp": {"$gte": month_start}
                 }
             },

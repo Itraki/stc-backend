@@ -70,8 +70,16 @@ async def cleanup_old_data():
         result = await db.token_usage.delete_many({
             "timestamp": {"$lt": cutoff_date}
         })
-        
         logger.info(f"Cleaned up {result.deleted_count} old token usage records")
+
+        # Delete system logs older than 30 days
+        log_cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+        result = await db.system_logs.delete_many({"timestamp": {"$lt": log_cutoff}})
+        logger.info(f"Cleaned up {result.deleted_count} old system log records")
+
+        # Delete activity logs older than 30 days
+        result = await db.activity_logs.delete_many({"timestamp": {"$lt": log_cutoff}})
+        logger.info(f"Cleaned up {result.deleted_count} old activity log records")
         
     except Exception as e:
         logger.error(f"Error in cleanup_old_data: {e}")

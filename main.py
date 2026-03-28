@@ -5,9 +5,10 @@ from fastapi.responses import FileResponse
 from starlette.middleware.gzip import GZipMiddleware
 from app.api.v1.router import router as api_v1_router
 from app.core.exceptions import setup_exception_handlers
-from app.core.logging import logger
+from app.core.logging import logger, mongo_log_handler
 from app.db.client import mongodb_client
 from app.db.redis_client import redis_client
+from app.middleware.activity_tracker import ActivityTrackerMiddleware
 from app.config import settings
 import os
 
@@ -17,18 +18,23 @@ async def lifespan(app: FastAPI):
     logger.info("Starting FastAPI application...")
     await mongodb_client.connect()
     logger.info("MongoDB connected successfully")
-    
+
+    # Start MongoDB log handler so system logs are persisted to the DB
+    await mongo_log_handler.start(mongodb_client.db)
+    logger.info("MongoDB log handler started")
+
     await redis_client.connect()
     logger.info("Redis connected successfully")
-    
+
     # Start background tasks
     from app.tasks.scheduler import start_background_tasks
     start_background_tasks()
     logger.info("Background tasks started")
-    
+
     yield
-    
+
     logger.info("Shutting down FastAPI application...")
+    await mongo_log_handler.stop()
     await mongodb_client.disconnect()
     logger.info("MongoDB disconnected")
     await redis_client.disconnect()
@@ -42,6 +48,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+app.add_middleware(ActivityTrackerMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,

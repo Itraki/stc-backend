@@ -70,6 +70,16 @@ class MongoDBClient:
             )
             await self.db.cases.create_index([("case_year", ASCENDING)], background=True)
 
+            # System logs indexes
+            await self.db.system_logs.create_index([("timestamp", DESCENDING)], background=True)
+            await self.db.system_logs.create_index([("level", ASCENDING), ("timestamp", DESCENDING)], background=True)
+
+            # Activity logs indexes
+            await self.db.activity_logs.create_index([("timestamp", DESCENDING)], background=True)
+            await self.db.activity_logs.create_index([("user_id", ASCENDING), ("timestamp", DESCENDING)], background=True)
+            await self.db.activity_logs.create_index([("path", ASCENDING), ("timestamp", DESCENDING)], background=True)
+            await self.db.activity_logs.create_index([("status_code", ASCENDING), ("timestamp", DESCENDING)], background=True)
+
             logger.info("Database indexes ensured (background mode)")
         except Exception as e:
             logger.warning(f"Error creating indexes: {e}")

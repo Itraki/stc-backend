@@ -5,7 +5,6 @@ from app.core.security import require_role, TokenData
 from app.core.logging import logger
 from app.config import settings
 import psutil
-import os
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -100,59 +99,132 @@ async def get_system_statistics(
 @router.get("/logs")
 async def get_api_logs(
     hours: int = Query(24, ge=1, le=168),
-    log_type: str = Query("all", enum=["all", "errors", "info"]),
+    log_type: str = Query("all", enum=["all", "errors", "warnings", "info"]),
     limit: int = Query(100, ge=1, le=1000),
     current_user: TokenData = Depends(require_role("admin")),
     db=Depends(get_database)
 ):
-    """Get API logs (admin only)"""
+    """Get system logs from MongoDB (admin only)"""
     try:
-        log_file = "logs/app.log"
-
-        if not os.path.exists(log_file):
-            return {
-                "logs": [],
-                "total": 0
-            }
-
-        # Read logs
-        logs = []
         cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
 
-        try:
-            with open(log_file, 'r') as f:
-                for line in f:
-                    if log_type == "errors" and "ERROR" not in line:
-                        continue
-                    if log_type == "info" and "INFO" not in line:
-                        continue
-                    logs.append(line.strip())
+        match: dict = {"timestamp": {"$gte": cutoff_time}}
+        if log_type == "errors":
+            match["level"] = "ERROR"
+        elif log_type == "warnings":
+            match["level"] = "WARNING"
+        elif log_type == "info":
+            match["level"] = "INFO"
 
-            # Return latest entries
-            logs = logs[-limit:]
+        pipeline = [
+            {"$match": match},
+            {"$sort": {"timestamp": -1}},
+            {"$limit": limit},
+            {"$project": {
+                "_id": 0,
+                "timestamp": 1,
+                "level": 1,
+                "message": 1,
+                "logger": 1,
+                "module": 1,
+                "function": 1,
+                "line": 1,
+                "exc_info": 1,
+            }}
+        ]
 
-            logger.info(f"Logs retrieved by {current_user.user_id}")
+        logs = await db.system_logs.aggregate(pipeline).to_list(limit)
 
-            return {
-                "logs": logs,
-                "total": len(logs),
-                "hours": hours,
-                "log_type": log_type
-            }
-        except Exception as e:
-            logger.error(f"Error reading logs: {e}")
-            return {
-                "logs": [],
-                "total": 0,
-                "error": "Could not read logs"
-            }
+        # Serialize timestamps
+        for log in logs:
+            if isinstance(log.get("timestamp"), datetime):
+                log["timestamp"] = log["timestamp"].isoformat()
+
+        logger.info(f"System logs retrieved by {current_user.user_id}")
+
+        return {
+            "logs": logs,
+            "total": len(logs),
+            "hours": hours,
+            "log_type": log_type,
+        }
 
     except Exception as e:
-        logger.error(f"Error getting logs: {e}")
+        logger.error(f"Error getting system logs: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error getting logs"
+            detail="Error getting system logs"
         )
+
+
+@router.get("/activity")
+async def get_user_activity(
+    hours: int = Query(24, ge=1, le=720),
+    user_id: str = Query(None),
+    path: str = Query(None),
+    status_code: int = Query(None),
+    limit: int = Query(100, ge=1, le=1000),
+    current_user: TokenData = Depends(require_role("admin")),
+    db=Depends(get_database)
+):
+    """Get user activity logs from MongoDB (admin only)"""
+    try:
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
+        match: dict = {"timestamp": {"$gte": cutoff_time}}
+
+        if user_id:
+            match["user_id"] = user_id
+        if path:
+            match["path"] = {"$regex": path, "$options": "i"}
+        if status_code:
+            match["status_code"] = status_code
+
+        pipeline = [
+            {"$match": match},
+            {"$sort": {"timestamp": -1}},
+            {"$limit": limit},
+            {"$project": {"_id": 0}}
+        ]
+
+        activities = await db.activity_logs.aggregate(pipeline).to_list(limit)
+
+        for activity in activities:
+            if isinstance(activity.get("timestamp"), datetime):
+                activity["timestamp"] = activity["timestamp"].isoformat()
+
+        # Summary stats
+        total_pipeline = [
+            {"$match": match},
+            {"$group": {
+                "_id": None,
+                "total_requests": {"$sum": 1},
+                "avg_duration_ms": {"$avg": "$duration_ms"},
+                "unique_users": {"$addToSet": "$user_id"},
+            }}
+        ]
+        summary_result = await db.activity_logs.aggregate(total_pipeline).to_list(1)
+        summary = summary_result[0] if summary_result else {}
+
+        logger.info(f"Activity logs retrieved by {current_user.user_id}")
+
+        return {
+            "activities": activities,
+            "total": len(activities),
+            "hours": hours,
+            "summary": {
+                "total_requests": summary.get("total_requests", 0),
+                "avg_duration_ms": round(summary.get("avg_duration_ms") or 0, 2),
+                "unique_users": len([u for u in summary.get("unique_users", []) if u]),
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting activity logs: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error getting activity logs"
+        )
+
 
 
 @router.post("/backup")
@@ -160,15 +232,14 @@ async def trigger_backup(
     current_user: TokenData = Depends(require_role("admin")),
     db=Depends(get_database)
 ):
-    """Trigger system backup (admin only)"""
+    """Trigger system backup (admin only) - NOT YET IMPLEMENTED"""
     try:
-        logger.info(f"Backup initiated by {current_user.user_id}")
+        logger.warning(f"Backup requested by {current_user.user_id} but backup is not implemented")
 
-        return {
-            "status": "backup_initiated",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "message": "Backup process started"
-        }
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Backup functionality is not yet implemented"
+        )
     except Exception as e:
         logger.error(f"Error triggering backup: {e}")
         raise HTTPException(
