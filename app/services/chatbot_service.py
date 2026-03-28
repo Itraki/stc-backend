@@ -8,6 +8,7 @@ from app.integrations.postgres_vector_service import PostgresVectorService
 from app.integrations.embedding_service import EmbeddingService
 from typing import Optional, List, Dict
 import uuid
+import re
 
 try:
     from langchain_groq import ChatGroq
@@ -350,15 +351,11 @@ Please provide a helpful response based on the available data and context."""
             # Search uploaded documents using PostgreSQL vector search
             if self.rag_available:
                 try:
-                    # Generate embedding for the query
                     query_embedding = await self.embedding_service.embed_text(message)
-                    
-                    # Search for relevant document chunks
                     doc_results = await self.vector_service.search_similar_chunks(
                         query_embedding,
                         top_k=3
                     )
-                    
                     if doc_results:
                         context["data"] += "\n\nRelevant Document Content:\n"
                         for i, result in enumerate(doc_results, 1):
@@ -367,22 +364,32 @@ Please provide a helpful response based on the available data and context."""
                         logger.info(f"Found {len(doc_results)} relevant document chunks")
                 except Exception as e:
                     logger.error(f"Error searching documents: {e}")
-            
-            # Check if query is about statistics or data
-            if any(word in message_lower for word in ["how many", "statistics", "data", "cases", "reports", "county"]):
-                # Get recent case statistics
+
+            # Individual case lookup — triggers on case-specific queries
+            individual_keywords = [
+                "show", "find", "get", "details", "info", "about", "list", "search",
+                "case", "open", "closed", "pending", "high", "medium", "low",
+                "severity", "status", "abuse", "county", "subcounty", "age", "child"
+            ]
+            if any(word in message_lower for word in individual_keywords):
+                case_results = await self._search_individual_cases(message)
+                if case_results:
+                    context["data"] += f"\n\nMatching Cases:\n{case_results}"
+                    context["sources"].append("cases_individual")
+
+            # Aggregate statistics — triggers on summary/count queries
+            if any(word in message_lower for word in ["how many", "statistics", "data", "reports", "total"]):
                 case_stats = await self._get_case_statistics()
                 if case_stats:
                     context["data"] += f"\n\nCase Statistics:\n{case_stats}"
-                    context["sources"].append("cases")
+                    context["sources"].append("cases_aggregate")
                 
-                # Check Kenya API data
                 kenya_stats = await self._get_kenya_data_summary()
                 if kenya_stats:
                     context["data"] += f"\n\nKenya API Data:\n{kenya_stats}"
                     context["sources"].append("kenya_api")
             
-            # Check if query is about recent incidents or news
+            # Recent incidents / news
             if any(word in message_lower for word in ["recent", "news", "latest", "incident"]):
                 scraped_data = await self._get_recent_scraped_data()
                 if scraped_data:
@@ -394,6 +401,140 @@ Please provide a helpful response based on the available data and context."""
         except Exception as e:
             logger.error(f"Error gathering context: {e}")
             return context
+
+    async def _search_individual_cases(self, message: str) -> str:
+        """Search individual case records based on the user's message.
+
+        Extracts a case ID, or filters by county, status, severity, abuse type,
+        and child age from natural language and returns formatted case records.
+        """
+        try:
+            message_lower = message.lower()
+            query_filter: Dict = {}
+
+            # 1. Exact case ID lookup (e.g. "case KE-1234", "case #KE-1234", "KE-1234")
+            case_id_match = re.search(r'\b([A-Z]{1,5}[-/]?\d{2,})\b', message)
+
+            # Extract year from message (e.g. "2024 cases", "cases from 2023")
+            year_match = re.search(r'\b(20\d{2})\b', message)
+            msg_year = int(year_match.group(1)) if year_match else None
+
+            if case_id_match:
+                case_id = case_id_match.group(1)
+                year_filter = {"case_year": msg_year} if msg_year else {}
+                case = await self.cases_collection.find_one({"case_id": case_id, **year_filter})
+                if not case:
+                    case = await self.cases_collection.find_one(
+                        {"case_id": {"$regex": f"^{re.escape(case_id)}$", "$options": "i"}, **year_filter}
+                    )
+                if case:
+                    return self._format_case(case)
+
+            # 2. Filter by status
+            if "open" in message_lower:
+                query_filter["status"] = "open"
+            elif "closed" in message_lower:
+                query_filter["status"] = "closed"
+            elif "pending" in message_lower:
+                query_filter["status"] = "pending"
+
+            # 3. Filter by severity
+            if "high" in message_lower and "severity" in message_lower:
+                query_filter["severity"] = "high"
+            elif "medium" in message_lower and "severity" in message_lower:
+                query_filter["severity"] = "medium"
+            elif "low" in message_lower and "severity" in message_lower:
+                query_filter["severity"] = "low"
+            # Also catch plain "high risk", "high severity" etc.
+            elif re.search(r'\bhigh[\s-]?(risk|severity|priority)\b', message_lower):
+                query_filter["severity"] = "high"
+
+            # 4. Filter by abuse type keywords
+            abuse_type_map = {
+                "physical": "Physical Abuse",
+                "sexual": "Sexual Abuse",
+                "neglect": "Neglect",
+                "emotional": "Emotional Abuse",
+                "psychological": "Psychological Abuse",
+                "exploitation": "Exploitation",
+                "trafficking": "Trafficking",
+            }
+            for keyword, abuse_value in abuse_type_map.items():
+                if keyword in message_lower:
+                    query_filter["abuse_type"] = {"$regex": keyword, "$options": "i"}
+                    break
+
+            # 5. Filter by county — check for known county names in the message
+            county_match = re.search(
+                r'\b(nairobi|mombasa|kisumu|nakuru|eldoret|thika|nyeri|machakos|'
+                r'kiambu|uasin gishu|kilifi|kwale|meru|embu|garissa|wajir|mandera|'
+                r'turkana|west pokot|samburu|trans nzoia|baringo|laikipia|nyandarua|'
+                r'kirinyaga|muranga|kakamega|vihiga|bungoma|busia|siaya|homa bay|'
+                r'migori|kisii|nyamira|narok|kajiado|kericho|bomet|nandi|'
+                r'taita taveta|tana river|lamu|marsabit|isiolo|kitui|makueni|'
+                r'nandi|elgeyo marakwet|nyamira)\b',
+                message_lower
+            )
+            if county_match:
+                query_filter["county"] = {"$regex": county_match.group(1), "$options": "i"}
+
+            # 6. Filter by child age or age range
+            age_match = re.search(r'\bage[d\s]+(\d+)\b|\b(\d+)\s*year[s\s]*old\b', message_lower)
+            if age_match:
+                age = int(age_match.group(1) or age_match.group(2))
+                query_filter["child_age"] = age
+
+            # 7. If no specific filters detected but message mentions "case/cases", return recent ones
+            if not query_filter and re.search(r'\bcases?\b', message_lower):
+                query_filter = {}  # fetch most recent
+
+            # Scope by year if mentioned
+            if msg_year and query_filter is not None:
+                query_filter["case_year"] = msg_year
+
+            # Execute query — return up to 5 individual records
+            if query_filter is not None:
+                cursor = self.cases_collection.find(query_filter).sort("case_date", -1).limit(5)
+                cases = await cursor.to_list(5)
+
+                if not cases:
+                    return "No cases found matching your criteria."
+
+                formatted = f"Found {len(cases)} case(s):\n"
+                for case in cases:
+                    formatted += "\n" + self._format_case(case)
+                return formatted
+
+            return ""
+
+        except Exception as e:
+            logger.error(f"Error searching individual cases: {e}")
+            return ""
+
+    def _format_case(self, case: dict) -> str:
+        """Format a single MongoDB case document into a readable string."""
+        date_str = case.get("case_date", "")
+        if isinstance(date_str, datetime):
+            date_str = date_str.strftime("%Y-%m-%d")
+
+        lines = [
+            f"━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"Case ID    : {case.get('case_id', 'N/A')}",
+            f"Year       : {case.get('case_year', date_str[:4] if date_str else 'N/A')}",
+            f"Date       : {date_str}",
+            f"County     : {case.get('county', 'N/A')}",
+            f"Subcounty  : {case.get('subcounty', 'N/A')}",
+            f"Abuse Type : {case.get('abuse_type', 'N/A')}",
+            f"Status     : {case.get('status', 'N/A')}",
+            f"Severity   : {case.get('severity', 'N/A')}",
+            f"Child Age  : {case.get('child_age', case.get('age_range', 'N/A'))}",
+            f"Child Sex  : {case.get('child_sex', 'N/A')}",
+        ]
+        if case.get("description"):
+            lines.append(f"Description: {case['description']}")
+        if case.get("intervention"):
+            lines.append(f"Intervention: {case['intervention']}")
+        return "\n".join(lines)
     
     async def _get_case_statistics(self) -> str:
         """Get summary statistics from cases"""

@@ -63,6 +63,13 @@ class CaseService:
         case_data["created_at"] = datetime.now(timezone.utc)
         case_data["updated_at"] = datetime.now(timezone.utc)
 
+        # Derive case_year from case_date for compound uniqueness
+        if case_data.get("case_date"):
+            case_date = case_data["case_date"]
+            if isinstance(case_date, str):
+                case_date = datetime.fromisoformat(case_date)
+            case_data["case_year"] = case_date.year
+
         # Auto-geocode if county is provided and coordinates are missing
         if case_data.get("county") and not case_data.get("latitude"):
             try:
@@ -86,30 +93,45 @@ class CaseService:
         logger.info(f"Case created: {case_data.get('case_id')}")
         return case_data
 
-    async def get_case_by_id(self, case_id: str):
-        """Get case by ID"""
+    def _build_case_filter(self, case_id: str, year: Optional[int] = None) -> list:
+        """Return a list of filters to try when looking up a case.
+
+        When year is provided the compound (case_id, case_year) filter is tried
+        first so the lookup is precise.  Falls back to ObjectId and bare case_id
+        for backward compatibility.
+        """
+        filters = []
+        # ObjectId fallback (internal _id)
         try:
-            # Try to find by MongoDB _id first
-            try:
-                case = await self.cases_collection.find_one({"_id": ObjectId(case_id)})
+            filters.append({"_id": ObjectId(case_id)})
+        except Exception:
+            pass
+        # Compound key — preferred when year is known
+        if year is not None:
+            filters.insert(0, {"case_id": case_id, "case_year": year})
+            if case_id.isdigit():
+                filters.insert(1, {"case_id": int(case_id), "case_year": year})
+        else:
+            # No year — match any document with this case_id
+            filters.append({"case_id": case_id})
+            if case_id.isdigit():
+                filters.append({"case_id": int(case_id)})
+        return filters
+
+    async def get_case_by_id(self, case_id: str, year: Optional[int] = None):
+        """Get case by ID, optionally scoped to a specific year"""
+        try:
+            for query in self._build_case_filter(case_id, year):
+                case = await self.cases_collection.find_one(query)
                 if case:
                     return case
-            except:
-                pass
-            
-            # Try by case_id field as string
-            case = await self.cases_collection.find_one({"case_id": case_id})
-            
-            # Try by case_id as integer if string search failed and case_id is numeric
-            if not case and case_id.isdigit():
-                case = await self.cases_collection.find_one({"case_id": int(case_id)})
-            
-            if not case:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Case not found"
-                )
-            return case
+
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Case not found"
+            )
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error getting case: {e}")
             raise
@@ -298,90 +320,59 @@ class CaseService:
         
         return result
 
-    async def update_case(self, case_id: str, update_data: dict):
-        """Update case"""
+    async def update_case(self, case_id: str, update_data: dict, year: Optional[int] = None):
+        """Update case, optionally scoped to a specific year"""
         try:
             update_data["updated_at"] = datetime.now(timezone.utc)
 
-            # Try to find by MongoDB _id or case_id field
-            case_query = None
-            try:
-                case_query = {"_id": ObjectId(case_id)}
+            # If case_date is being updated, keep case_year in sync
+            if "case_date" in update_data:
+                cd = update_data["case_date"]
+                if isinstance(cd, str):
+                    cd = datetime.fromisoformat(cd)
+                update_data["case_year"] = cd.year
+
+            for query in self._build_case_filter(case_id, year):
                 result = await self.cases_collection.find_one_and_update(
-                    case_query,
+                    query,
                     {"$set": update_data},
                     return_document=True
                 )
                 if result:
                     logger.info(f"Case updated: {case_id}")
                     return result
-            except:
-                pass
 
-            # Try by case_id as string
-            case_query = {"case_id": case_id}
-            result = await self.cases_collection.find_one_and_update(
-                case_query,
-                {"$set": update_data},
-                return_document=True
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Case not found"
             )
-            
-            # Try by case_id as integer if string search failed
-            if not result and case_id.isdigit():
-                case_query = {"case_id": int(case_id)}
-                result = await self.cases_collection.find_one_and_update(
-                    case_query,
-                    {"$set": update_data},
-                    return_document=True
-                )
-
-            if not result:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Case not found"
-                )
-
-            logger.info(f"Case updated: {case_id}")
-            return result
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error updating case: {e}")
             raise
 
-    async def delete_case(self, case_id: str):
-        """Delete case"""
+    async def delete_case(self, case_id: str, year: Optional[int] = None):
+        """Archive a case (soft-delete) by setting its status to 'archived'"""
         try:
-            # Try to find by MongoDB _id or case_id field
-            case_query = None
-            result = None
-            
-            try:
-                case_query = {"_id": ObjectId(case_id)}
-                result = await self.cases_collection.delete_one(case_query)
-                if result.deleted_count > 0:
-                    logger.info(f"Case deleted: {case_id}")
-                    return True
-            except:
-                pass
-            
-            # Try by case_id as string
-            case_query = {"case_id": case_id}
-            result = await self.cases_collection.delete_one(case_query)
-            
-            # Try by case_id as integer if string search failed
-            if result.deleted_count == 0 and case_id.isdigit():
-                case_query = {"case_id": int(case_id)}
-                result = await self.cases_collection.delete_one(case_query)
-
-            if result.deleted_count == 0:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Case not found"
+            for query in self._build_case_filter(case_id, year):
+                result = await self.cases_collection.find_one_and_update(
+                    query,
+                    {"$set": {"status": CaseStatus.ARCHIVED.value, "updated_at": datetime.now(timezone.utc)}},
+                    return_document=True
                 )
+                if result:
+                    logger.info(f"Case archived: {case_id}")
+                    return True
 
-            logger.info(f"Case deleted: {case_id}")
-            return True
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Case not found"
+            )
+        except HTTPException:
+            raise
         except Exception as e:
-            logger.error(f"Error deleting case: {e}")
+            logger.error(f"Error archiving case: {e}")
             raise
 
     async def get_case_statistics(

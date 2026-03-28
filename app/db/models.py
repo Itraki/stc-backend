@@ -14,6 +14,7 @@ class CaseStatus(str, Enum):
     OPEN = "open"
     CLOSED = "closed"
     PENDING = "pending"
+    ARCHIVED = "archived"
 
 
 class SeverityLevel(str, Enum):
@@ -63,6 +64,7 @@ class CaseCreate(BaseModel):
 class CaseResponse(BaseModel):
     id: str = Field(alias="_id")
     case_id: str
+    case_year: Optional[int] = None
     case_date: datetime
     county: str
     subcounty: Optional[str] = None

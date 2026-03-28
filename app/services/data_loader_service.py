@@ -62,10 +62,11 @@ class DataLoaderService:
                     doc = self._convert_row_to_document(row, source='parquet_import')
                     
                     if skip_duplicates and doc.get('case_id'):
-                        # Check if case_id already exists
-                        existing = await self.cases_collection.find_one(
-                            {"case_id": doc['case_id']}
-                        )
+                        # Check duplicate using compound key (case_id + case_year)
+                        dup_filter = {"case_id": doc['case_id']}
+                        if doc.get('case_year'):
+                            dup_filter["case_year"] = doc['case_year']
+                        existing = await self.cases_collection.find_one(dup_filter)
                         if existing:
                             skipped_count += 1
                             continue
@@ -199,10 +200,11 @@ class DataLoaderService:
                     doc = self._convert_row_to_document(row, source='csv_import')
                     
                     if skip_duplicates and doc.get('case_id'):
-                        # Check if case_id already exists
-                        existing = await self.cases_collection.find_one(
-                            {"case_id": doc['case_id']}
-                        )
+                        # Check duplicate using compound key (case_id + case_year)
+                        dup_filter = {"case_id": doc['case_id']}
+                        if doc.get('case_year'):
+                            dup_filter["case_year"] = doc['case_year']
+                        existing = await self.cases_collection.find_one(dup_filter)
                         if existing:
                             skipped_count += 1
                             continue
@@ -345,6 +347,18 @@ class DataLoaderService:
         doc['source'] = source
         doc['created_at'] = datetime.now(timezone.utc)
         doc['updated_at'] = datetime.now(timezone.utc)
+
+        # Derive case_year from case_date for compound uniqueness
+        if 'case_date' in doc and doc['case_date']:
+            cd = doc['case_date']
+            if isinstance(cd, str):
+                try:
+                    from dateutil.parser import parse as parse_date
+                    cd = parse_date(cd)
+                except Exception:
+                    pass
+            if hasattr(cd, 'year'):
+                doc['case_year'] = cd.year
         
         # Set default status if not present
         if 'status' not in doc:
