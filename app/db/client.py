@@ -63,6 +63,13 @@ class MongoDBClient:
             # Demographics compound index
             await self.db.cases.create_index([("county", ASCENDING), ("sex", ASCENDING), ("age_range", ASCENDING)], background=True)
             
+            # Drop legacy single-field unique index if it still exists
+            try:
+                await self.db.cases.drop_index("case_id_1")
+                logger.info("Dropped legacy case_id_1 unique index")
+            except Exception:
+                pass  # Index doesn't exist — nothing to do
+
             # Compound unique index: same case_id is allowed across different years
             await self.db.cases.create_index(
                 [("case_id", ASCENDING), ("case_year", ASCENDING)],

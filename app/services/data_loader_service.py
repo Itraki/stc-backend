@@ -50,43 +50,59 @@ class DataLoaderService:
         updated_count = 0
         skipped_count = 0
         error_count = 0
-        
+
+        # Track seen (case_id, case_year) keys within this file to avoid
+        # within-file duplicates. Cross-upload duplicates are handled by the
+        # compound index — DuplicateKeyError is counted as skipped, not error.
+        seen_keys: set = set()
+
         # Process in batches
         for i in range(0, total_records, batch_size):
             batch = df.iloc[i:i + batch_size]
             batch_docs = []
-            
+
             for _, row in batch.iterrows():
                 try:
-                    # Convert row to document (parquet source)
                     doc = self._convert_row_to_document(row, source='parquet_import')
-                    
+
                     if skip_duplicates and doc.get('case_id'):
-                        # Check duplicate using compound key (case_id + case_year)
-                        dup_filter = {"case_id": doc['case_id']}
-                        if doc.get('case_year'):
-                            dup_filter["case_year"] = doc['case_year']
-                        existing = await self.cases_collection.find_one(dup_filter)
-                        if existing:
+                        key = (str(doc['case_id']), doc.get('case_year'))
+                        if key in seen_keys:
                             skipped_count += 1
                             continue
-                    
+                        seen_keys.add(key)
+
                     batch_docs.append(doc)
-                    
+
                 except Exception as e:
                     logger.error(f"Error converting row to document: {e}")
                     error_count += 1
                     continue
-            
-            # Insert batch
+
+            # Insert batch — let compound index reject true duplicates
             if batch_docs:
                 try:
                     result = await self.cases_collection.insert_many(
-                        batch_docs, 
+                        batch_docs,
                         ordered=False
                     )
                     inserted_count += len(result.inserted_ids)
                 except Exception as e:
+                    # BulkWriteError: some docs inserted, some were duplicates
+                    from pymongo.errors import BulkWriteError
+                    if isinstance(e, BulkWriteError):
+                        inserted_count += e.details.get('nInserted', 0)
+                        dup_count = sum(
+                            1 for err in e.details.get('writeErrors', [])
+                            if err.get('code') == 11000
+                        )
+                        skipped_count += dup_count
+                        other_errors = len(e.details.get('writeErrors', [])) - dup_count
+                        if other_errors:
+                            error_count += other_errors
+                    else:
+                        logger.error(f"Error inserting batch: {e}")
+                        error_count += len(batch_docs)
                     logger.error(f"Error inserting batch: {e}")
                     error_count += len(batch_docs)
             
@@ -188,35 +204,36 @@ class DataLoaderService:
         updated_count = 0
         skipped_count = 0
         error_count = 0
-        
+
+        # Track seen (case_id, case_year) keys within this file to avoid
+        # within-file duplicates. Cross-upload duplicates are handled by the
+        # compound index — DuplicateKeyError is counted as skipped, not error.
+        seen_keys: set = set()
+
         # Process in batches
         for i in range(0, total_records, batch_size):
             batch = df.iloc[i:i + batch_size]
             batch_docs = []
-            
+
             for _, row in batch.iterrows():
                 try:
-                    # Convert row to document (CSV source)
                     doc = self._convert_row_to_document(row, source='csv_import')
-                    
+
                     if skip_duplicates and doc.get('case_id'):
-                        # Check duplicate using compound key (case_id + case_year)
-                        dup_filter = {"case_id": doc['case_id']}
-                        if doc.get('case_year'):
-                            dup_filter["case_year"] = doc['case_year']
-                        existing = await self.cases_collection.find_one(dup_filter)
-                        if existing:
+                        key = (str(doc['case_id']), doc.get('case_year'))
+                        if key in seen_keys:
                             skipped_count += 1
                             continue
-                    
+                        seen_keys.add(key)
+
                     batch_docs.append(doc)
-                    
+
                 except Exception as e:
                     logger.error(f"Error converting row to document: {e}")
                     error_count += 1
                     continue
-            
-            # Insert batch
+
+            # Insert batch — let compound index reject cross-upload duplicates
             if batch_docs:
                 try:
                     result = await self.cases_collection.insert_many(
@@ -225,8 +242,20 @@ class DataLoaderService:
                     )
                     inserted_count += len(result.inserted_ids)
                 except Exception as e:
-                    logger.error(f"Error inserting batch: {e}")
-                    error_count += len(batch_docs)
+                    from pymongo.errors import BulkWriteError
+                    if isinstance(e, BulkWriteError):
+                        inserted_count += e.details.get('nInserted', 0)
+                        dup_count = sum(
+                            1 for err in e.details.get('writeErrors', [])
+                            if err.get('code') == 11000
+                        )
+                        skipped_count += dup_count
+                        other_errors = len(e.details.get('writeErrors', [])) - dup_count
+                        if other_errors:
+                            error_count += other_errors
+                    else:
+                        logger.error(f"Error inserting batch: {e}")
+                        error_count += len(batch_docs)
             
             logger.info(
                 f"Progress: {min(i + batch_size, total_records)}/{total_records} records processed"
