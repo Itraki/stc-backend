@@ -184,16 +184,33 @@ curl -X PUT "http://localhost:8000/api/v1/cases/CASE-2024-001" \
 
 ---
 
-### Delete Case
+### Delete Case (Archive)
 
-Delete a case (admin only).
+Archive a case by setting its status to `archived`. This is a **soft delete** - the case remains in the database but is marked as archived.
 
 **Endpoint**: `DELETE /api/v1/cases/{case_id}`
 
 **Authentication**: Required (ADMIN role only)
 
-**Response (204)**:
-No content
+**Query Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `year` | integer | Optional year for multi-year case ID disambiguation |
+
+**Behavior**:
+- **Soft Delete**: Sets `status` to `archived` and updates `updated_at` timestamp
+- **Data Preserved**: Case data remains in database (not permanently deleted)
+- **Reversible**: Can be restored by updating status back to `open`, `closed`, or `pending`
+
+**Response (200)**:
+
+```json
+{
+  "message": "Case archived successfully",
+  "case_id": "CASE-2024-001"
+}
+```
 
 **Errors**:
 - `401`: Unauthorized
@@ -203,9 +220,175 @@ No content
 **Example Request**:
 
 ```bash
-curl -X DELETE "http://localhost:8000/api/v1/cases/CASE-2024-001" \
+curl -X DELETE "http://localhost:8000/api/v1/cases/CASE-2024-001?year=2024" \
   -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
+
+**Important**: To permanently delete a case, use database admin tools directly (not recommended).
+
+---
+
+### Get Case Statistics Summary
+
+Get aggregated case statistics with optional filtering.
+
+**Endpoint**: `GET /api/v1/cases/stats/summary`
+
+**Authentication**: Required (All authenticated users)
+
+**Query Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `county` | string | Filter by county |
+| `date_from` | string | Start date (YYYY-MM-DD) |
+| `date_to` | string | End date (YYYY-MM-DD) |
+
+**Response (200)**:
+
+```json
+{
+  "total_cases": [{"count": 1542}],
+  "by_abuse_type": [
+    {"_id": "Physical", "count": 450},
+    {"_id": "Neglect", "count": 380},
+    {"_id": "Sexual", "count": 312}
+  ],
+  "by_status": [
+    {"_id": "open", "count": 234},
+    {"_id": "closed", "count": 1200},
+    {"_id": "archived", "count": 108}
+  ],
+  "by_severity": [
+    {"_id": "high", "count": 89},
+    {"_id": "medium", "count": 512},
+    {"_id": "low", "count": 941}
+  ]
+}
+```
+
+**Example Request**:
+
+```bash
+curl "http://localhost:8000/api/v1/cases/stats/summary?county=Nairobi&date_from=2024-01-01" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+---
+
+### Get Comprehensive Statistics
+
+Get comprehensive case statistics including Kenya API metadata.
+
+**Endpoint**: `GET /api/v1/cases/statistics`
+
+**Authentication**: Required (All authenticated users)
+
+**Query Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `include_kenya` | boolean | Include Kenya API metadata (default: true) |
+
+**Response (200)**:
+
+```json
+{
+  "total_cases": 1542,
+  "by_status": {
+    "open": 234,
+    "closed": 1200,
+    "pending": 0,
+    "archived": 108
+  },
+  "by_county": [
+    {"county": "Nairobi", "count": 450},
+    {"county": "Mombasa", "count": 280}
+  ],
+  "kenya_api_metadata": {
+    "last_sync": "2024-03-15T10:30:00Z",
+    "total_records": 1200,
+    "counties_covered": 47
+  }
+}
+```
+
+**Example Request**:
+
+```bash
+curl "http://localhost:8000/api/v1/cases/statistics?include_kenya=true" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+---
+
+### Sync Kenya API Data
+
+Manually trigger synchronization with Kenya Child Protection API.
+
+**Endpoint**: `POST /api/v1/cases/sync-kenya-data`
+
+**Authentication**: Required (ADMIN or MEMBER role)
+
+**Query Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `county` | string | Filter by county |
+| `sub_county` | string | Filter by sub-county |
+| `case_category` | string | Filter by case category |
+
+**Behavior**:
+- Fetches latest data from `https://data.childprotection.go.ke/api/v2/cld/`
+- Automatically integrates with existing cases (deduplicates by case_id)
+- Supports filtering to sync specific regions or categories
+- Useful for on-demand data refresh
+
+**Response (200)**:
+
+```json
+{
+  "message": "Kenya API data sync completed",
+  "details": {
+    "records_fetched": 450,
+    "records_inserted": 120,
+    "records_updated": 30,
+    "records_skipped": 300
+  }
+}
+```
+
+**Errors**:
+- `401`: Unauthorized
+- `403`: Forbidden (VIEWER role cannot sync)
+- `500`: External API error
+
+**Example Request**:
+
+```bash
+# Sync all data
+curl -X POST "http://localhost:8000/api/v1/cases/sync-kenya-data" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+
+# Sync specific county
+curl -X POST "http://localhost:8000/api/v1/cases/sync-kenya-data?county=Nairobi" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+---
+
+## Case Status Values
+
+| Status | Description |
+|--------|-------------|
+| `open` | Case is active and being handled |
+| `closed` | Case has been resolved |
+| `pending` | Case is awaiting action/review |
+| `archived` | Case has been soft-deleted (via DELETE endpoint) |
+
+**Note**: Archived cases remain in the database and can be restored by updating their status.
+
+---
 
 ## Next Steps
 
