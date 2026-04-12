@@ -60,7 +60,7 @@ class MongoLogHandler(logging.Handler):
             await self._flush()
 
     async def _flush(self):
-        if not self._db or not self._buffer:
+        if self._db is None or not self._buffer:
             return
         docs = []
         while self._buffer:
