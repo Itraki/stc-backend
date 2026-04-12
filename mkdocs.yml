@@ -75,8 +75,27 @@ nav:
   - API Reference:
       - Overview: api/overview.md
       - Authentication: api/authentication.md
+      - Cases: api/cases.md
+      - Analytics: api/analytics.md
+      - Chatbot: api/chatbot.md
+      - File Upload: api/file-upload.md
   - Development:
       - Project Structure: development/structure.md
+      - Data Models: development/data-models.md
+      - Code Reference: development/code-reference.md
+      - Testing: development/testing.md
+      - Contributing: development/contributing.md
+  - Deployment:
+      - Docker Deployment: deployment/docker.md
+      - Production Deployment: deployment/production.md
+  - Guides:
+      - Security: guides/security.md
+      - Troubleshooting: guides/troubleshooting.md
+      - FAQ: guides/faq.md
+  - Features:
+      - RBAC: features/rbac.md
+  - Data Loading:
+      - Loading Data: data/loading.md
 
 extra:
   social:

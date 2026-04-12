@@ -81,16 +81,59 @@ Create a new child protection case.
 
 ```json
 {
-  "status": "open",
-  "severity": "high",
-  "location": "Nairobi",
-  "description": "Case description",
-  "child_demographics": {
-    "age": 12,
-    "gender": "Female"
-  }
+  "case_id": "string (unique)",
+  "case_date": "2024-01-15T00:00:00Z",
+  "county": "string",
+  "subcounty": "string",
+  "child_age": 12,
+  "child_sex": "M|F",
+  "abuse_type": "string",
+  "description": "string",
+  "severity": "low|medium|high|unknown",
+  "latitude": 0.0,
+  "longitude": 0.0
 }
 ```
+
+**Response (201)**:
+
+```json
+{
+  "id": "string",
+  "case_id": "CASE-2024-001",
+  "message": "Case created successfully",
+  "created_at": "2024-01-15T10:30:00Z"
+}
+```
+
+**Errors**:
+- `400`: Invalid input data
+- `401`: Unauthorized
+- `403`: Forbidden (insufficient permissions)
+- `422`: Validation error (e.g., duplicate case_id)
+
+**Example Request**:
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/cases" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "case_id": "KE-2024-001234",
+    "case_date": "2024-01-15T00:00:00Z",
+    "county": "Nairobi",
+    "subcounty": "Westlands",
+    "child_age": 12,
+    "child_sex": "F",
+    "abuse_type": "Physical",
+    "description": "Case details...",
+    "severity": "high",
+    "latitude": -1.2921,
+    "longitude": 36.8219
+  }'
+```
+
+---
 
 ### Update Case
 
@@ -100,13 +143,69 @@ Update an existing case.
 
 **Authentication**: Required (MEMBER or ADMIN role)
 
+**Request Body**:
+
+```json
+{
+  "case_date": "2024-01-15T00:00:00Z (optional)",
+  "status": "open|closed|pending|archived (optional)",
+  "severity": "low|medium|high|unknown (optional)",
+  "description": "string (optional)"
+}
+```
+
+**Response (200)**:
+
+```json
+{
+  "id": "string",
+  "message": "Case updated successfully",
+  "updated_at": "2024-01-15T12:45:00Z"
+}
+```
+
+**Errors**:
+- `401`: Unauthorized
+- `403`: Forbidden
+- `404`: Case not found
+- `422`: Validation error
+
+**Example Request**:
+
+```bash
+curl -X PUT "http://localhost:8000/api/v1/cases/CASE-2024-001" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "status": "closed",
+    "severity": "medium"
+  }'
+```
+
+---
+
 ### Delete Case
 
-Delete a case.
+Delete a case (admin only).
 
 **Endpoint**: `DELETE /api/v1/cases/{case_id}`
 
 **Authentication**: Required (ADMIN role only)
+
+**Response (204)**:
+No content
+
+**Errors**:
+- `401`: Unauthorized
+- `403`: Forbidden (non-admin users)
+- `404`: Case not found
+
+**Example Request**:
+
+```bash
+curl -X DELETE "http://localhost:8000/api/v1/cases/CASE-2024-001" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
 
 ## Next Steps
 

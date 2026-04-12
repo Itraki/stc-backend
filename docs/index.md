@@ -56,6 +56,14 @@ A production-ready FastAPI backend designed for managing child protection cases 
 
     [:octicons-arrow-right-24: API Docs](api/overview.md)
 
+-   :material-database:{ .lg .middle } **Data Models**
+
+    ---
+
+    Data structures, schemas, and validation rules
+
+    [:octicons-arrow-right-24: Data Models](development/data-models.md)
+
 -   :material-docker:{ .lg .middle } **Deployment**
 
     ---
